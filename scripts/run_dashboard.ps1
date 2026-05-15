@@ -1,8 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
     [int]$Port = 8501
 )
+
+$ErrorActionPreference = "Stop"
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) {
