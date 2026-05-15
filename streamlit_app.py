@@ -23,6 +23,8 @@ from dragon_backtest.signals import build_signals
 
 
 ROOT = Path(__file__).resolve().parent
+LOCAL_DATA_ROOT = Path("Z:/home/资料/股票/量化/mengxiangbao/lh/data")
+DEFAULT_DAILY_PATH = LOCAL_DATA_ROOT / "raw/daily_price_long_clean.csv"
 
 
 def rel_path(value: str) -> Path:
@@ -92,11 +94,11 @@ def run_research_backtest(
 
 def render_sidebar():
     st.sidebar.header("运行参数")
-    data_path = st.sidebar.text_input("日线数据路径", "data/raw/daily_price.csv")
-    config_path = st.sidebar.text_input("配置文件路径", "config/default.toml")
+    data_path = st.sidebar.text_input("日线数据路径", str(DEFAULT_DAILY_PATH))
+    config_path = st.sidebar.text_input("配置文件路径", "config/event_tuned.toml")
     mode = st.sidebar.selectbox("回测模式", ["confirmed", "potential", "hybrid"], index=0)
-    out_dir = st.sidebar.text_input("结果输出目录", f"data/backtest_result/{mode}")
-    check_dir = st.sidebar.text_input("数据检查目录", "data/data_check")
+    out_dir = st.sidebar.text_input("结果输出目录", str(LOCAL_DATA_ROOT / f"backtest_result/{mode}"))
+    check_dir = st.sidebar.text_input("数据检查目录", str(LOCAL_DATA_ROOT / "data_check"))
 
     st.sidebar.divider()
     start = st.sidebar.text_input("开始日期，可空", "")
@@ -302,7 +304,7 @@ def render_parameter_sweep(params: dict) -> None:
     stop_loss = cols[2].text_input("止损", "-0.08,-0.10")
     max_holding_days = cols[3].text_input("最长持仓", "20,30")
 
-    out_dir_text = st.text_input("参数测试输出目录", "data/param_sweep")
+    out_dir_text = st.text_input("参数测试输出目录", str(LOCAL_DATA_ROOT / "param_sweep"))
     sweep_out_dir = rel_path(out_dir_text)
 
     if st.button("运行参数测试", type="primary"):
@@ -436,7 +438,10 @@ def render_data_check(check_dir: Path) -> None:
     cols[1].metric("错误", counts.get("error", 0))
     cols[2].metric("警告", counts.get("warning", 0))
     cols[3].metric("提示", counts.get("info", 0))
-    st.write(f"数据范围：{report.get('start_date')} 至 {report.get('end_date')}，股票数：{report.get('stock_count')}，行数：{report.get('rows')}")
+    st.write(
+        f"数据范围：{report.get('start_date')} 至 {report.get('end_date')}，"
+        f"股票数：{report.get('stock_count')}，行数：{report.get('rows')}"
+    )
     issues = pd.DataFrame(report.get("issues", []))
     if issues.empty:
         st.success("未发现数据问题。")

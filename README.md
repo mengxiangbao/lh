@@ -76,7 +76,41 @@ trade_distribution.csv 交易收益分布
 sector_exposure.csv    板块持仓暴露
 ```
 
-后续如果需要，可以再加一个 Streamlit / Dash 图形界面，用来查看净值曲线、交易明细、TopK 候选股和每日预警表。
+## 推荐工作方式：GitHub 仓库 + 本机 Z 盘数据
+
+后续更推荐把代码仓库放在：
+
+```text
+Z:\home\资料\股票\量化\mengxiangbao\lh
+```
+
+同时把数据放在同一个目录下的：
+
+```text
+Z:\home\资料\股票\量化\mengxiangbao\lh\data
+```
+
+这样最简单：GitHub 仓库同步代码，`data` 文件夹留在本机，不上传到 GitHub。项目已经在 `.gitignore` 中排除了 `data/raw`、回测结果、数据体检结果等大文件目录。
+
+当前所有主配置文件已经默认指向清洗后的日线文件：
+
+```text
+Z:/home/资料/股票/量化/mengxiangbao/lh/data/raw/daily_price_long_clean.csv
+```
+
+所以常用回测命令可以直接用配置文件里的数据路径：
+
+```powershell
+python main.py backtest --config config/event_tuned.toml --out "Z:\home\资料\股票\量化\mengxiangbao\lh\data\backtest_result\event_tuned" --mode confirmed
+```
+
+数据体检命令仍然需要显式传入 `--data`：
+
+```powershell
+python main.py check-data --data "Z:\home\资料\股票\量化\mengxiangbao\lh\data\raw\daily_price_long_clean.csv" --out "Z:\home\资料\股票\量化\mengxiangbao\lh\data\data_check"
+```
+
+启动界面时，侧边栏会自动填入 Z 盘数据路径、Z 盘输出目录和 Z 盘数据检查目录。
 
 ## 快速运行样例
 
@@ -138,10 +172,10 @@ python main.py backtest --config config/default.toml --data data/raw/daily_price
 
 ## 真实 A 股回测需要你提供什么数据？
 
-最低需要一张点时化日线表，可以是 CSV 或 Parquet。默认路径是：
+最低需要一张点时化日线表，可以是 CSV 或 Parquet。当前本机默认路径是：
 
 ```text
-data/raw/daily_price.csv
+Z:\home\资料\股票\量化\mengxiangbao\lh\data\raw\daily_price_long_clean.csv
 ```
 
 必需字段如下：
@@ -321,6 +355,14 @@ python main.py backtest --config config/default.toml --data data/raw/daily_price
 ```powershell
 .\scripts\fetch_tushare_and_backtest.ps1 -Start 20210101 -End 20241231 -Mode confirmed
 ```
+
+这个脚本默认把数据和结果写到：
+
+```text
+Z:\home\资料\股票\量化\mengxiangbao\lh\data
+```
+
+如果要临时写到其他目录，可以追加 `-DataRoot "你的数据目录"`。
 
 `fetch-tushare` 会调用这些数据：
 
@@ -799,7 +841,7 @@ python main.py backtest `
 - Level-2 数据
 - 龙虎榜、公告、新闻等事件数据
 - LightGBM / XGBoost 机器学习模型
-- 图形化回测界面
+- 更完整的实盘交易工作台
 
 建议先用真实日线数据跑通，再扩展机器学习模型和分钟线版本。
 

@@ -1,5 +1,5 @@
 [data]
-daily_path = "data/raw/daily_price.csv"
+daily_path = "Z:/home/资料/股票/量化/mengxiangbao/lh/data/raw/daily_price_long_clean.csv"
 
 [universe]
 min_list_days = 120
@@ -57,4 +57,3 @@ max_holding_days = 30
 stale_exit_days = 10
 exit_ma = "ma20"
 sector_weak_pct = 0.50
-

@@ -3,7 +3,8 @@ $ErrorActionPreference = "Stop"
 param(
     [string]$Start = "20210101",
     [string]$End = "20241231",
-    [string]$Mode = "confirmed"
+    [string]$Mode = "confirmed",
+    [string]$DataRoot = "Z:\home\资料\股票\量化\mengxiangbao\lh\data"
 )
 
 if (-not $env:TUSHARE_TOKEN) {
@@ -28,12 +29,16 @@ if ((-not $python) -and (Test-Path $localPython)) {
     throw "Python was not found. Install Python 3.11+ or add it to PATH."
 }
 
+$dailyPath = Join-Path $DataRoot "raw\daily_price.csv"
+$checkDir = Join-Path $DataRoot "data_check"
+$outDir = Join-Path $DataRoot "backtest_result\$Mode"
+
 if ($python -and $python.Name -eq "py.exe") {
-    py -3 main.py fetch-tushare --start $Start --end $End --out data/raw/daily_price.csv
-    py -3 main.py check-data --data data/raw/daily_price.csv --out data/data_check
-    py -3 main.py backtest --config config/default.toml --data data/raw/daily_price.csv --out "data/backtest_result/$Mode" --mode $Mode
+    py -3 main.py fetch-tushare --start $Start --end $End --out $dailyPath
+    py -3 main.py check-data --data $dailyPath --out $checkDir
+    py -3 main.py backtest --config config/default.toml --data $dailyPath --out $outDir --mode $Mode
 } else {
-    & $pythonPath main.py fetch-tushare --start $Start --end $End --out data/raw/daily_price.csv
-    & $pythonPath main.py check-data --data data/raw/daily_price.csv --out data/data_check
-    & $pythonPath main.py backtest --config config/default.toml --data data/raw/daily_price.csv --out "data/backtest_result/$Mode" --mode $Mode
+    & $pythonPath main.py fetch-tushare --start $Start --end $End --out $dailyPath
+    & $pythonPath main.py check-data --data $dailyPath --out $checkDir
+    & $pythonPath main.py backtest --config config/default.toml --data $dailyPath --out $outDir --mode $Mode
 }
