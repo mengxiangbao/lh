@@ -1,0 +1,60 @@
+[data]
+daily_path = "data/raw/daily_price.csv"
+
+[universe]
+min_list_days = 120
+exclude_st = true
+exclude_suspended = true
+min_avg_amount_20d = 100000000.0
+max_ret_20d = 0.30
+max_limit_up_count_10d = 1
+max_amount_ma5_to_ma60 = 3.0
+min_close_to_high_60d = 0.90
+min_sector_shift_pct = 0.70
+require_stock_stronger_than_sector = true
+max_drawdown_vs_sector_median = true
+min_up_amount_ratio_20d = 1.20
+
+[score.weights]
+hidden_rs = 0.25
+accumulation = 0.20
+vol_squeeze = 0.15
+anti_fall = 0.15
+sector_shift = 0.15
+position = 0.10
+
+[signal]
+mode = "confirmed"
+candidate_top_n = 50
+candidate_top_pct = 0.01
+direct_top_n = 10
+trigger_amount_to_ma60 = 1.5
+trigger_ret_1d = 0.05
+trigger_sector_ret_pct = 0.80
+trigger_close_location = 0.70
+report_top_k = 10
+
+[trade]
+initial_cash = 1000000.0
+target_weight = 0.10
+max_positions = 10
+lot_size = 100
+buy_slippage = 0.001
+sell_slippage = 0.001
+commission_rate = 0.00025
+min_commission = 5.0
+transfer_fee_rate = 0.00001
+stamp_tax_rate_before_20230828 = 0.001
+stamp_tax_rate_after_20230828 = 0.0005
+volume_cap = 0.05
+impact_k = 0.001
+limit_tolerance = 0.0001
+
+[risk]
+stop_loss = -0.10
+trailing_stop = -0.12
+max_holding_days = 30
+stale_exit_days = 10
+exit_ma = "ma20"
+sector_weak_pct = 0.50
+

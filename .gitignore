@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+data/raw/
+data/backtest_result/
+data/backtest_result_long/
+data/feature_store/
+data/labels/
+data/signals/
+data/data_check*/
+data/param_sweep*/
+data/event_study/
+data/tushare_cache/
+logs/
