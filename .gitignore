@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+data/
 data/raw/
 data/backtest_result/
 data/backtest_result_long/
