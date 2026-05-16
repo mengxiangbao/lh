@@ -39,6 +39,7 @@ report_top_k = 10
 initial_cash = 1000000.0
 target_weight = 0.10
 max_positions = 10
+capacity_base = "min_signal_trade"
 lot_size = 100
 buy_slippage = 0.001
 sell_slippage = 0.001

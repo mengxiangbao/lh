@@ -130,10 +130,24 @@ def execute_buy(
         return None, cash, record
 
     signal_amount = max(float(signal_row.get("amount", 0.0) or 0.0), 0.0)
-    max_value = signal_amount * trade_cfg["volume_cap"]
+    trade_amount = max(float(row.get("amount", 0.0) or 0.0), 0.0)
+    capacity_base_mode = str(trade_cfg.get("capacity_base", "min_signal_trade"))
+    if capacity_base_mode == "signal":
+        capacity_base = signal_amount
+        zero_reason = "no_signal_liquidity"
+    elif capacity_base_mode == "trade":
+        capacity_base = trade_amount
+        zero_reason = "no_trade_liquidity"
+    elif capacity_base_mode == "min_signal_trade":
+        capacity_base = min(signal_amount, trade_amount)
+        zero_reason = "no_capacity_liquidity"
+    else:
+        raise ValueError(f"Unknown trade.capacity_base: {capacity_base_mode}")
+
+    max_value = capacity_base * trade_cfg["volume_cap"]
     order_value = min(float(target_value), max_value, cash)
     if order_value <= 0:
-        reason = "no_signal_liquidity" if signal_amount <= 0 else "no_cash"
+        reason = zero_reason if capacity_base <= 0 else "no_cash"
         record.update(status="blocked", blocked_reason=reason)
         return None, cash, record
 
@@ -171,6 +185,10 @@ def execute_buy(
         value=float(value),
         cost=float(cost),
         cash_after=float(cash_after),
+        capacity_base_mode=capacity_base_mode,
+        signal_amount=float(signal_amount),
+        trade_amount=float(trade_amount),
+        capacity_base=float(capacity_base),
     )
     return position, cash_after, record
 

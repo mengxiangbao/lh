@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -67,6 +68,32 @@ def write_table(df: pd.DataFrame, path: str | Path) -> None:
         raise ValueError(f"Unsupported table format: {path.suffix}")
 
 
+def compute_data_hash(path: str | Path | None = None, df: pd.DataFrame | None = None) -> str:
+    resolved = Path(path).resolve() if path else None
+    if resolved and resolved.exists():
+        return _sha256_file(resolved)
+    if df is not None:
+        return _hash_dataframe(df)
+    raise ValueError("compute_data_hash requires an existing path or a dataframe.")
+
+
+def convert_table(input_path: str | Path, output_path: str | Path, float32: bool = False) -> Path:
+    df = read_table(input_path)
+    if float32:
+        df = compress_float64_to_float32(df)
+    output_path = Path(output_path)
+    write_table(df, output_path)
+    return output_path
+
+
+def compress_float64_to_float32(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    float_cols = out.select_dtypes(include=["float64"]).columns
+    if len(float_cols):
+        out.loc[:, float_cols] = out[float_cols].astype("float32")
+    return out
+
+
 def normalize_daily_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -102,3 +129,24 @@ def load_daily(path: str | Path, start: str | None = None, end: str | None = Non
         df = df[df["date"] <= pd.Timestamp(end)]
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
     return df
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _hash_dataframe(df: pd.DataFrame) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(",".join(map(str, df.columns)).encode("utf-8"))
+    hasher.update(str(len(df)).encode("utf-8"))
+    if "date" in df.columns:
+        dates = pd.to_datetime(df["date"], errors="coerce")
+        hasher.update(str(dates.min()).encode("utf-8"))
+        hasher.update(str(dates.max()).encode("utf-8"))
+    sample = pd.concat([df.head(200), df.tail(200)], axis=0)
+    hasher.update(sample.to_csv(index=False).encode("utf-8", errors="ignore"))
+    return hasher.hexdigest()

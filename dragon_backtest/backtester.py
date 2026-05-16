@@ -73,11 +73,6 @@ SIGNAL_OUTPUT_COLUMNS = [
     "market_liquidity_regime",
     "market_breadth_regime",
     "market_combined_regime",
-    "future_max_return_20d",
-    "future_rank_in_sector_20d",
-    "days_to_start",
-    "y_start_10d",
-    "y_leader_20d",
 ]
 
 

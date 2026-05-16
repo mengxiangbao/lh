@@ -56,6 +56,7 @@ def check_daily_data(
     check_amount_units(df, issues, sample_rows)
     check_market_values(df, issues, sample_rows)
     check_boolean_columns(df, issues, sample_rows)
+    check_point_in_time(df, issues, sample_rows)
 
     return write_report(path, df, issues, out_dir)
 
@@ -258,6 +259,66 @@ def check_boolean_columns(df: pd.DataFrame, issues: list[DataIssue], sample_rows
             add_issue(issues, "warning", f"{col}.non_boolean_values", f"`{col}` 存在非布尔风格取值。", df.loc[bad_index], sample_rows)
 
 
+def check_point_in_time(df: pd.DataFrame, issues: list[DataIssue], sample_rows: int) -> None:
+    expected_meta = [
+        ("sector_source", "point_in_time.sector_source.missing", "Missing sector_source; sector provenance is unclear.", "warning"),
+        (
+            "sector_effective_date",
+            "point_in_time.sector_effective_date.missing",
+            "Missing sector_effective_date; sector classification may not be point-in-time.",
+            "warning",
+        ),
+        ("trade_status", "point_in_time.trade_status.missing", "Missing trade_status; suspension/delisting survivorship risk may exist.", "warning"),
+        ("delist_date", "point_in_time.delist_date.missing", "Missing delist_date; survivorship bias risk may exist.", "warning"),
+        ("adjustment_mode", "point_in_time.adjustment_mode.missing", "Missing adjustment_mode; adjusted/raw price lineage is unknown.", "warning"),
+        ("limit_price_mode", "point_in_time.limit_price_mode.missing", "Missing limit_price_mode; limit-price matching rule is unknown.", "warning"),
+    ]
+    for col, check, message, severity in expected_meta:
+        if col not in df.columns:
+            issues.append(DataIssue(severity=severity, check=check, message=message, rows=int(len(df))))
+
+    if "sector_effective_date" in df.columns:
+        eff = pd.to_datetime(df["sector_effective_date"], errors="coerce")
+        invalid = df["sector_effective_date"].notna() & eff.isna()
+        if invalid.any():
+            add_issue(
+                issues,
+                "warning",
+                "point_in_time.sector_effective_date.invalid",
+                "sector_effective_date has unparsable rows.",
+                df[invalid],
+                sample_rows,
+            )
+
+    if "delist_date" in df.columns:
+        empty = df["delist_date"].isna() | df["delist_date"].astype(str).str.strip().isin(["", "nan", "None", "NaT"])
+        if bool(empty.all()):
+            issues.append(
+                DataIssue(
+                    severity="warning",
+                    check="point_in_time.delist_date.all_empty",
+                    message="delist_date exists but all values are empty; survivorship bias risk may exist.",
+                    rows=int(len(df)),
+                )
+            )
+
+    if "adjustment_mode" in df.columns and "limit_price_mode" in df.columns:
+        adj = df["adjustment_mode"].astype(str).str.strip().str.lower()
+        limit_mode = df["limit_price_mode"].astype(str).str.strip().str.lower()
+        adjusted = adj.str.contains("qfq|hfq|adj|forward|backward", regex=True, na=False)
+        raw_limit = limit_mode.str.contains("raw|unadjusted|none|na", regex=True, na=False)
+        mixed = adjusted & raw_limit
+        if mixed.any():
+            add_issue(
+                issues,
+                "error",
+                "point_in_time.limit_adjustment_mismatch",
+                "Adjusted prices are mixed with raw limit-price mode; limit checks may be invalid.",
+                df[mixed],
+                sample_rows,
+            )
+
+
 def coerce_bool(s: pd.Series) -> pd.Series:
     if pd.api.types.is_bool_dtype(s):
         return s.fillna(False)
@@ -309,6 +370,7 @@ def write_report(path: Path, df: pd.DataFrame, issues: list[DataIssue], out_dir:
         "end_date": str(pd.to_datetime(df["date"]).max().date()) if "date" in df.columns and len(df) else None,
         "severity_counts": severity_counts,
         "can_backtest": severity_counts["error"] == 0,
+        "point_in_time_checks": [asdict(issue) for issue in issues if issue.check.startswith("point_in_time.")],
         "issues": [asdict(issue) for issue in issues],
     }
 

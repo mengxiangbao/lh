@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import tomllib
+from typing import Any
 
 
 DEFAULT_CONFIG = {
@@ -71,6 +72,7 @@ DEFAULT_CONFIG = {
         "initial_cash": 1_000_000.0,
         "target_weight": 0.10,
         "max_positions": 10,
+        "capacity_base": "min_signal_trade",
         "lot_size": 100,
         "buy_slippage": 0.001,
         "sell_slippage": 0.001,
@@ -111,4 +113,94 @@ def load_config(path: str | Path | None = None) -> dict:
             raise FileNotFoundError(f"Config file not found: {path}")
         with path.open("rb") as f:
             deep_update(cfg, tomllib.load(f))
+    validate_config(cfg)
     return cfg
+
+
+def validate_config(cfg: dict[str, Any]) -> None:
+    trade = cfg.get("trade", {})
+    signal = cfg.get("signal", {})
+    risk = cfg.get("risk", {})
+    market_sizing = cfg.get("market_sizing", {})
+    market_filter = cfg.get("market_filter", {})
+
+    _require_between(trade, "target_weight", 0.0, 1.0, right_inclusive=True, section="trade", left_inclusive=False)
+    _require_between(trade, "volume_cap", 0.0, 1.0, right_inclusive=True, section="trade", left_inclusive=False)
+    _require_positive_int(trade, "max_positions", section="trade")
+    _require_positive_int(trade, "lot_size", section="trade")
+    _require_non_negative(trade, "buy_slippage", section="trade")
+    _require_non_negative(trade, "sell_slippage", section="trade")
+    _require_non_negative(trade, "commission_rate", section="trade")
+    _require_non_negative(trade, "min_commission", section="trade")
+    _require_non_negative(trade, "transfer_fee_rate", section="trade")
+    _require_non_negative(trade, "impact_k", section="trade")
+    _require_non_negative(trade, "limit_tolerance", section="trade")
+    _require_enum(trade, "capacity_base", {"signal", "trade", "min_signal_trade"}, section="trade")
+
+    _require_between(signal, "candidate_top_pct", 0.0, 1.0, section="signal", left_inclusive=True, right_inclusive=True)
+    _require_positive_int(signal, "candidate_top_n", section="signal")
+    _require_positive_int(signal, "direct_top_n", section="signal")
+    _require_positive_int(signal, "report_top_k", section="signal")
+    _require_enum(signal, "mode", {"potential", "confirmed", "hybrid"}, section="signal")
+
+    _require_negative(risk, "stop_loss", section="risk")
+    _require_negative(risk, "trailing_stop", section="risk")
+    _require_positive_int(risk, "max_holding_days", section="risk")
+    _require_positive_int(risk, "stale_exit_days", section="risk")
+    _require_between(risk, "sector_weak_pct", 0.0, 1.0, section="risk", left_inclusive=False, right_inclusive=True)
+
+    if market_sizing.get("enabled", False):
+        _require_between(market_sizing, "min_mult", 0.0, 1.0, section="market_sizing", left_inclusive=False, right_inclusive=True)
+        _require_between(market_sizing, "max_mult", 0.0, 1.0, section="market_sizing", left_inclusive=False, right_inclusive=True)
+        if float(market_sizing["min_mult"]) > float(market_sizing["max_mult"]):
+            raise ValueError(
+                f"Invalid config: market_sizing.min_mult ({market_sizing['min_mult']}) cannot be greater than "
+                f"market_sizing.max_mult ({market_sizing['max_mult']})."
+            )
+
+    if market_filter.get("enabled", False):
+        _require_enum(market_filter, "apply_to", {"buy"}, section="market_filter")
+        _require_between(market_filter, "min_positive_ratio_ma5", 0.0, 1.0, section="market_filter", left_inclusive=True, right_inclusive=True)
+
+
+def _require_enum(d: dict[str, Any], key: str, allowed: set[str], section: str) -> None:
+    value = d.get(key)
+    if value not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValueError(f"Invalid config: {section}.{key}={value!r} is not allowed. Expected one of: {allowed_text}.")
+
+
+def _require_positive_int(d: dict[str, Any], key: str, section: str) -> None:
+    value = d.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"Invalid config: {section}.{key} must be a positive integer, got {value!r}.")
+
+
+def _require_non_negative(d: dict[str, Any], key: str, section: str) -> None:
+    value = float(d.get(key))
+    if value < 0:
+        raise ValueError(f"Invalid config: {section}.{key} must be >= 0, got {value!r}.")
+
+
+def _require_negative(d: dict[str, Any], key: str, section: str) -> None:
+    value = float(d.get(key))
+    if value >= 0:
+        raise ValueError(f"Invalid config: {section}.{key} must be < 0, got {value!r}.")
+
+
+def _require_between(
+    d: dict[str, Any],
+    key: str,
+    low: float,
+    high: float,
+    section: str,
+    left_inclusive: bool = True,
+    right_inclusive: bool = True,
+) -> None:
+    value = float(d.get(key))
+    low_ok = value >= low if left_inclusive else value > low
+    high_ok = value <= high if right_inclusive else value < high
+    if not (low_ok and high_ok):
+        left = "[" if left_inclusive else "("
+        right = "]" if right_inclusive else ")"
+        raise ValueError(f"Invalid config: {section}.{key}={value!r} is out of range {left}{low}, {high}{right}.")

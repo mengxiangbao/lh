@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 from .backtester import run_backtest, write_backtest_outputs
 from .alerts import build_alerts, write_alerts
+from .artifacts import attach_metadata_to_metrics, write_run_artifacts
 from .config import load_config
-from .data import load_daily, write_table
+from .data import compute_data_hash, convert_table, load_daily, write_table
 from .data_check import check_daily_data
 from .data_fix import fix_daily_data
 from .event_study import EventStudyConfig, run_event_study
-from .features import prepare_features
+from .features import prepare_features_cached
 from .labels import build_research_labels
 from .minishare_source import fetch_minishare_mins, read_code_list
 from .parameter_sweep import DEFAULT_SWEEP, parse_float_list, parse_int_list, run_parameter_sweep
@@ -21,7 +23,6 @@ from .regime_analysis import run_regime_analysis
 from .reporting import write_report_tables
 from .sample_data import generate_sample_daily
 from .signals import build_signals
-from .tushare_client import DEFAULT_TUSHARE_HTTP_URL
 from .tushare_source import fetch_tushare_daily
 
 
@@ -40,7 +41,7 @@ def main() -> None:
     fetch.add_argument("--end", required=True, help="End date, e.g. 20241231")
     fetch.add_argument("--out", default="data/raw/daily_price.csv")
     fetch.add_argument("--token", default=None, help="Prefer env var TUSHARE_TOKEN instead of this option")
-    fetch.add_argument("--http-url", default=DEFAULT_TUSHARE_HTTP_URL)
+    fetch.add_argument("--http-url", default=None, help="Optional Tushare API URL override; defaults to Tushare package behavior")
     fetch.add_argument("--sleep", type=float, default=0.12, help="Sleep seconds between API calls")
     fetch.add_argument("--skip-namechange", action="store_true", help="Skip historical ST namechange lookup")
     fetch.add_argument("--cache-dir", default=None, help="Optional per-trade-date cache directory for resumable fetches")
@@ -67,6 +68,11 @@ def main() -> None:
     fix.add_argument("--input", default="data/raw/daily_price.csv", help="Input daily CSV")
     fix.add_argument("--out", default="data/raw/daily_price_clean.csv", help="Output cleaned daily CSV")
 
+    convert_data = sub.add_parser("convert-data", help="Convert daily table between CSV/Parquet with optional float32 compression")
+    convert_data.add_argument("--input", required=True, help="Input CSV/Parquet path")
+    convert_data.add_argument("--out", required=True, help="Output CSV/Parquet path")
+    convert_data.add_argument("--float32", action="store_true", help="Convert float64 columns to float32 before writing")
+
     alerts = sub.add_parser("build-alerts", help="Build daily alert table from backtest signals")
     alerts.add_argument("--signals", default="data/backtest_result/confirmed/signals.csv")
     alerts.add_argument("--out", default="data/backtest_result/confirmed")
@@ -80,11 +86,16 @@ def main() -> None:
     sweep.add_argument("--mode", choices=["potential", "confirmed", "hybrid"], default="confirmed")
     sweep.add_argument("--start", default=None)
     sweep.add_argument("--end", default=None)
-    sweep.add_argument("--no-labels", action="store_true")
+    sweep.add_argument("--with-labels", action="store_true", help="Include research-only future labels in sweep")
     sweep.add_argument("--candidate-top-n", default=None, help="Comma list, e.g. 30,50")
     sweep.add_argument("--trigger-volume", default=None, help="Comma list, e.g. 1.3,1.5,2.0")
     sweep.add_argument("--stop-loss", default=None, help="Comma list, e.g. -0.08,-0.10")
     sweep.add_argument("--max-holding-days", default=None, help="Comma list, e.g. 20,30")
+    sweep.add_argument("--feature-cache-dir", default="data/feature_store", help="Feature cache directory; empty to disable")
+    sweep.add_argument("--float32-features", action="store_true", help="Compress engineered feature float columns to float32")
+    sweep.add_argument("--walk-forward", action="store_true", help="Enable rolling walk-forward evaluation")
+    sweep.add_argument("--train-months", type=int, default=24, help="Train window length in months for walk-forward")
+    sweep.add_argument("--test-months", type=int, default=3, help="Test window length in months for walk-forward")
 
     reports = sub.add_parser("build-reports", help="Build yearly/monthly performance reports from backtest outputs")
     reports.add_argument("--input", default="data/backtest_result/confirmed", help="Directory with equity/trades/positions CSV")
@@ -125,8 +136,10 @@ def main() -> None:
     bt.add_argument("--mode", choices=["potential", "confirmed", "hybrid"], default=None)
     bt.add_argument("--start", default=None)
     bt.add_argument("--end", default=None)
-    bt.add_argument("--no-labels", action="store_true", help="Skip research label metrics")
+    bt.add_argument("--with-labels", action="store_true", help="Include research-only future labels")
     bt.add_argument("--save-features", action="store_true")
+    bt.add_argument("--feature-cache-dir", default="data/feature_store", help="Feature cache directory; empty to disable")
+    bt.add_argument("--float32-features", action="store_true", help="Compress engineered feature float columns to float32")
 
     args = parser.parse_args()
     if args.command == "generate-sample":
@@ -193,6 +206,11 @@ def main() -> None:
         )
         return
 
+    if args.command == "convert-data":
+        out = convert_table(args.input, args.out, float32=args.float32)
+        print(f"converted table written: {out}")
+        return
+
     if args.command == "build-alerts":
         signals = pd.read_csv(args.signals, parse_dates=["date"])
         alert_df = build_alerts(signals, top_n=args.top_n, include_watch=not args.no_watch)
@@ -215,8 +233,13 @@ def main() -> None:
             mode=args.mode,
             start=args.start,
             end=args.end,
-            include_labels=not args.no_labels,
+            include_labels=args.with_labels,
             grid=grid,
+            feature_cache_dir=(args.feature_cache_dir or None),
+            compress_float32=args.float32_features,
+            walk_forward=args.walk_forward,
+            train_months=args.train_months,
+            test_months=args.test_months,
         )
         print(f"sweep written: {args.out}")
         print(f"runs={len(result_df)}")
@@ -232,6 +255,19 @@ def main() -> None:
                 "sharpe",
                 "round_trip_count",
             ]
+            if args.walk_forward:
+                display_cols = [
+                    "run_id",
+                    "candidate_top_n",
+                    "trigger_amount_to_ma60",
+                    "stop_loss",
+                    "max_holding_days",
+                    "wf_window_count",
+                    "wf_out_total_return",
+                    "wf_out_max_drawdown_abs",
+                    "wf_out_sharpe",
+                    "wf_stability_std_out_return",
+                ]
             print(result_df[display_cols].head(10).to_string(index=False))
         return
 
@@ -262,6 +298,12 @@ def main() -> None:
             else pd.DataFrame(),
         }
         metrics = summarize_performance(result, cfg)
+        artifact_refs = write_run_artifacts(
+            out_dir=out_dir,
+            cfg=cfg,
+            command=" ".join(sys.argv),
+        )
+        metrics = attach_metadata_to_metrics(metrics, artifact_refs)
         write_metrics(metrics, out_dir)
         write_report_tables(result, out_dir)
         if not result["signals"].empty:
@@ -322,18 +364,34 @@ def main() -> None:
         cfg = load_config(args.config)
         data_path = args.data or cfg["data"]["daily_path"]
         daily = load_daily(data_path, args.start, args.end)
-        features = prepare_features(daily)
-        if not args.no_labels:
+        data_hash = compute_data_hash(data_path)
+        features, cache_hit = prepare_features_cached(
+            daily=daily,
+            cache_dir=(args.feature_cache_dir or None),
+            data_hash=data_hash,
+            float32=args.float32_features,
+        )
+        if args.with_labels:
             features = build_research_labels(features)
         signals = build_signals(features, cfg, args.mode)
         result = run_backtest(signals, cfg, args.mode)
         metrics = summarize_performance(result, cfg)
         out_dir = Path(args.out)
+        artifact_refs = write_run_artifacts(
+            out_dir=out_dir,
+            cfg=cfg,
+            data_path=data_path,
+            data_df=daily,
+            command=" ".join(sys.argv),
+        )
+        metrics = attach_metadata_to_metrics(metrics, artifact_refs)
         write_backtest_outputs(result, out_dir)
         write_metrics(metrics, out_dir)
         if args.save_features:
             write_table(features, out_dir / "features.csv")
         print(f"outputs written: {out_dir}")
+        if cache_hit:
+            print(f"feature cache used: {cache_hit}")
         print(
             "summary: "
             f"return={metrics.get('total_return', 0):.2%}, "

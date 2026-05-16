@@ -7,7 +7,7 @@ from typing import Callable
 import pandas as pd
 
 from .data import normalize_bool, write_table
-from .tushare_client import DEFAULT_TUSHARE_HTTP_URL, init_tushare
+from .tushare_client import init_tushare
 
 
 def yyyymmdd(value: str) -> str:

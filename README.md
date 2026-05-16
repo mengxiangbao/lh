@@ -24,6 +24,19 @@
 pip install -r requirements.txt
 ```
 
+或安装为本地可执行命令（推荐）：
+
+```powershell
+pip install -e .
+lh --help
+```
+
+如需安装测试与 lint 工具：
+
+```powershell
+pip install -e .[dev]
+```
+
 ```powershell
 .\scripts\run_dashboard.ps1
 ```
@@ -74,6 +87,9 @@ monthly_returns.csv    月度收益矩阵
 drawdown_periods.csv   主要回撤区间
 trade_distribution.csv 交易收益分布
 sector_exposure.csv    板块持仓暴露
+run_metadata.json      本次运行元数据（run_id、git commit、环境版本）
+config_snapshot.toml   本次回测实际配置快照
+data_manifest.json     输入数据清单与哈希
 ```
 
 ## 推荐工作方式：GitHub 仓库 + 本机 Z 盘数据
@@ -322,7 +338,7 @@ python main.py fix-daily `
 
 ```powershell
 $env:TUSHARE_TOKEN="你的token"
-$env:TUSHARE_HTTP_URL="http://101.35.233.113:8020/"
+$env:TUSHARE_HTTP_URL="http://your-proxy:port/"  # 可选；不设置则走 tushare 默认地址
 ```
 
 Tushare 统一初始化方式保存在：
@@ -462,7 +478,8 @@ max_positions             最大持仓数
 commission_rate           佣金
 buy_slippage              买入滑点
 sell_slippage             卖出滑点
-volume_cap                单笔订单占当日成交额上限
+volume_cap                单笔订单占成交容量上限
+capacity_base             成交容量口径：signal / trade / min_signal_trade（默认）
 
 [risk]
 stop_loss                 止损
@@ -491,10 +508,13 @@ win_rate                  胜率
 avg_trade_return          单笔平均收益
 tradable_buy_rate         买入信号可成交比例
 limit_buy_block_count     涨停不可买次数
+capacity_blocked_buy_count 容量口径导致不可买次数
 limit_sell_block_count    跌停不可卖次数
 top10_precision_start_10d Top10 未来10日启动命中率
 top10_leader_hit_rate_20d Top10 未来20日龙头命中率
 top10_avg_lead_days       候选到启动的平均提前天数
+run_id                    本次回测ID
+metadata_file             元数据文件名（run_metadata.json）
 ```
 
 交易明细看：
@@ -580,6 +600,24 @@ python main.py sweep-params `
   --trigger-volume 1.3,1.5 `
   --stop-loss -0.08,-0.10 `
   --max-holding-days 20,30
+```
+
+如需研究标签（`future_*` / `y_*`）再显式开启：
+
+```powershell
+python main.py sweep-params --config config/default.toml --data data/raw/daily_price.csv --out data/param_sweep --mode confirmed --with-labels
+```
+
+参数扫描较慢时，建议开启特征缓存：
+
+```powershell
+python main.py sweep-params --config config/default.toml --data data/raw/daily_price.csv --out data/param_sweep --feature-cache-dir data/feature_store
+```
+
+样本外评估可启用 walk-forward：
+
+```powershell
+python main.py sweep-params --config config/default.toml --data data/raw/daily_price.csv --out data/param_sweep --walk-forward --train-months 24 --test-months 3
 ```
 
 输出：

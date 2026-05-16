@@ -3,9 +3,6 @@ from __future__ import annotations
 import os
 
 
-DEFAULT_TUSHARE_HTTP_URL = "http://101.35.233.113:8020/"
-
-
 def get_tushare_token(token: str | None = None) -> str:
     token = token or os.getenv("TUSHARE_TOKEN")
     if not token:
@@ -20,7 +17,7 @@ def init_tushare(token: str | None = None, http_url: str | None = None):
 
         import tushare as ts
         pro = ts.pro_api(token)
-        pro._DataApi__http_url = "http://101.35.233.113:8020/"
+        pro._DataApi__http_url = "http://your-proxy:port/"  # optional
 
     Token is intentionally read from TUSHARE_TOKEN by default instead of being
     stored in source code.
@@ -31,7 +28,9 @@ def init_tushare(token: str | None = None, http_url: str | None = None):
         raise ImportError("tushare is not installed. Run: pip install tushare") from exc
 
     pro = ts.pro_api(get_tushare_token(token))
-    pro._DataApi__http_url = http_url or os.getenv("TUSHARE_HTTP_URL") or DEFAULT_TUSHARE_HTTP_URL
+    resolved_http_url = http_url or os.getenv("TUSHARE_HTTP_URL")
+    if resolved_http_url:
+        pro._DataApi__http_url = resolved_http_url
     return pro
 
 

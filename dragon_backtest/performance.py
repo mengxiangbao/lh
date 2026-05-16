@@ -75,6 +75,13 @@ def summarize_performance(result: dict, cfg: dict) -> dict:
         "limit_buy_block_count": int(blocked_buy.get("blocked_reason", pd.Series(dtype=str)).str.contains("limit", na=False).sum())
         if not blocked_buy.empty
         else 0,
+        "capacity_blocked_buy_count": int(
+            blocked_buy.get("blocked_reason", pd.Series(dtype=str)).isin(
+                ["no_signal_liquidity", "no_trade_liquidity", "no_capacity_liquidity"]
+            ).sum()
+        )
+        if not blocked_buy.empty
+        else 0,
         "limit_sell_block_count": int(blocked_sell.get("blocked_reason", pd.Series(dtype=str)).str.contains("limit", na=False).sum())
         if not blocked_sell.empty
         else 0,

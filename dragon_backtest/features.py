@@ -1,7 +1,47 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
+
+def prepare_features_cached(
+    daily: pd.DataFrame,
+    cache_dir: str | None = None,
+    data_hash: str | None = None,
+    float32: bool = False,
+) -> tuple[pd.DataFrame, str | None]:
+    if not cache_dir or not data_hash:
+        features = prepare_features(daily)
+        if float32:
+            features = compress_feature_dtypes(features)
+        return features, None
+
+    cache_path = _feature_cache_path(cache_dir, data_hash, float32)
+    if cache_path.exists():
+        cached = pd.read_parquet(cache_path)
+        return cached, str(cache_path)
+
+    features = prepare_features(daily)
+    if float32:
+        features = compress_feature_dtypes(features)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    features.to_parquet(cache_path, index=False)
+    return features, str(cache_path)
+
+
+def compress_feature_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    float_cols = out.select_dtypes(include=["float64"]).columns
+    if len(float_cols):
+        out.loc[:, float_cols] = out[float_cols].astype("float32")
+    return out
+
+
+def _feature_cache_path(cache_dir: str, data_hash: str, float32: bool) -> Path:
+    suffix = "features_f32.parquet" if float32 else "features.parquet"
+    return Path(cache_dir) / f"daily_hash={data_hash}" / suffix
 
 
 def safe_div(a, b):
