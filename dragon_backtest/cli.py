@@ -14,11 +14,12 @@ from .data import compute_data_hash, convert_table, load_daily, write_table
 from .data_check import check_daily_data
 from .data_fix import fix_daily_data
 from .event_study import EventStudyConfig, run_event_study
+from .factor_analysis import run_factor_analysis
 from .features import prepare_features_cached
 from .labels import build_research_labels
 from .minishare_source import fetch_minishare_mins, read_code_list
 from .parameter_sweep import DEFAULT_SWEEP, parse_float_list, parse_int_list, run_parameter_sweep
-from .performance import summarize_performance, write_metrics
+from .performance import read_benchmark, summarize_performance, write_metrics
 from .regime_analysis import run_regime_analysis
 from .reporting import write_report_tables
 from .sample_data import generate_sample_daily
@@ -105,6 +106,7 @@ def main() -> None:
     summarize.add_argument("--input", default="data/backtest_result/confirmed", help="Directory with equity/trades/signals CSV")
     summarize.add_argument("--config", default="config/default.toml")
     summarize.add_argument("--out", default=None, help="Output directory, defaults to --input")
+    summarize.add_argument("--benchmark", default=None, help="Benchmark CSV/Parquet with date+benchmark_return or date+close")
 
     regimes = sub.add_parser("analyze-regimes", help="Analyze time slices and market regimes for a backtest")
     regimes.add_argument("--data", default="data/raw/daily_price.csv", help="Daily data path")
@@ -129,6 +131,18 @@ def main() -> None:
     study.add_argument("--fail-rank-min", type=float, default=0.30)
     study.add_argument("--save-window", action="store_true", help="Also save event_window.csv")
 
+    factors = sub.add_parser("analyze-factors", help="Analyze factor IC, quantile returns, and factor ablation")
+    factors.add_argument("--config", default="config/default.toml")
+    factors.add_argument("--data", default="data/raw/daily_price.csv")
+    factors.add_argument("--out", default="data/factor_analysis")
+    factors.add_argument("--mode", choices=["potential", "confirmed", "hybrid"], default="confirmed")
+    factors.add_argument("--start", default=None)
+    factors.add_argument("--end", default=None)
+    factors.add_argument("--target", default="future_return_20d", help="Research target column, e.g. future_return_20d")
+    factors.add_argument("--quantiles", type=int, default=5, help="Number of quantiles for layered return analysis")
+    factors.add_argument("--feature-cache-dir", default="data/feature_store", help="Feature cache directory; empty to disable")
+    factors.add_argument("--float32-features", action="store_true", help="Compress engineered feature float columns to float32")
+
     bt = sub.add_parser("backtest", help="Run daily rule-score backtest")
     bt.add_argument("--config", default="config/default.toml")
     bt.add_argument("--data", default=None, help="Daily data path, overrides config data.daily_path")
@@ -140,6 +154,13 @@ def main() -> None:
     bt.add_argument("--save-features", action="store_true")
     bt.add_argument("--feature-cache-dir", default="data/feature_store", help="Feature cache directory; empty to disable")
     bt.add_argument("--float32-features", action="store_true", help="Compress engineered feature float columns to float32")
+    bt.add_argument("--benchmark", default=None, help="Benchmark CSV/Parquet with date+benchmark_return or date+close")
+    bt.add_argument("--execution-mode", choices=["daily", "minute_confirmed"], default="daily")
+    bt.add_argument("--minute-dir", default="data/raw/minute", help="Minute data root directory")
+    bt.add_argument("--minute-freq", choices=["5min", "15min", "30min", "60min"], default="5min")
+    bt.add_argument("--minute-entry-time", default="09:35", help="Earliest minute timestamp to confirm buy entry, e.g. 09:35")
+    bt.add_argument("--minute-missing-policy", choices=["fallback_daily", "error"], default="fallback_daily")
+    bt.add_argument("--minute-price-field", choices=["open", "close", "vwap"], default="open")
 
     args = parser.parse_args()
     if args.command == "generate-sample":
@@ -297,7 +318,8 @@ def main() -> None:
             if (input_dir / "signals.csv").exists()
             else pd.DataFrame(),
         }
-        metrics = summarize_performance(result, cfg)
+        benchmark_df = read_benchmark(args.benchmark) if args.benchmark else None
+        metrics = summarize_performance(result, cfg, benchmark=benchmark_df)
         artifact_refs = write_run_artifacts(
             out_dir=out_dir,
             cfg=cfg,
@@ -360,6 +382,33 @@ def main() -> None:
             print(summary.to_string(index=False))
         return
 
+    if args.command == "analyze-factors":
+        cfg = load_config(args.config)
+        daily = load_daily(args.data, args.start, args.end)
+        data_hash = compute_data_hash(args.data)
+        features, cache_hit = prepare_features_cached(
+            daily=daily,
+            cache_dir=(args.feature_cache_dir or None),
+            data_hash=data_hash,
+            float32=args.float32_features,
+        )
+        # Factor analysis is a research command and requires future labels.
+        features = build_research_labels(features)
+        tables = run_factor_analysis(
+            features=features,
+            cfg=cfg,
+            out_dir=args.out,
+            mode=args.mode,
+            target_col=args.target,
+            n_quantiles=args.quantiles,
+        )
+        print(f"factor analysis written: {args.out}")
+        if cache_hit:
+            print(f"feature cache used: {cache_hit}")
+        for name, df in tables.items():
+            print(f"{name}: rows={len(df)}")
+        return
+
     if args.command == "backtest":
         cfg = load_config(args.config)
         data_path = args.data or cfg["data"]["daily_path"]
@@ -374,8 +423,21 @@ def main() -> None:
         if args.with_labels:
             features = build_research_labels(features)
         signals = build_signals(features, cfg, args.mode)
-        result = run_backtest(signals, cfg, args.mode)
-        metrics = summarize_performance(result, cfg)
+        result = run_backtest(
+            signals,
+            cfg,
+            args.mode,
+            execution_mode=args.execution_mode,
+            minute_cfg={
+                "minute_dir": args.minute_dir,
+                "minute_freq": args.minute_freq,
+                "minute_entry_time": args.minute_entry_time,
+                "missing_policy": args.minute_missing_policy,
+                "price_field": args.minute_price_field,
+            },
+        )
+        benchmark_df = read_benchmark(args.benchmark) if args.benchmark else None
+        metrics = summarize_performance(result, cfg, benchmark=benchmark_df)
         out_dir = Path(args.out)
         artifact_refs = write_run_artifacts(
             out_dir=out_dir,

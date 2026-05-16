@@ -17,7 +17,7 @@ def max_drawdown(equity: pd.Series) -> tuple[float, str | None, str | None]:
     return float(dd.loc[end]), str(start), str(end)
 
 
-def summarize_performance(result: dict, cfg: dict) -> dict:
+def summarize_performance(result: dict, cfg: dict, benchmark: pd.DataFrame | None = None) -> dict:
     equity = result["equity"].copy()
     trades = result["trades"].copy()
     signals = result["signals"].copy()
@@ -82,12 +82,108 @@ def summarize_performance(result: dict, cfg: dict) -> dict:
         )
         if not blocked_buy.empty
         else 0,
+        "minute_missing_buy_block_count": int(
+            blocked_buy.get("blocked_reason", pd.Series(dtype=str)).eq("missing_minute_data").sum()
+        )
+        if not blocked_buy.empty
+        else 0,
+        "minute_no_liquidity_buy_block_count": int(
+            blocked_buy.get("blocked_reason", pd.Series(dtype=str)).eq("minute_no_liquidity").sum()
+        )
+        if not blocked_buy.empty
+        else 0,
+        "minute_not_confirmed_buy_block_count": int(
+            blocked_buy.get("blocked_reason", pd.Series(dtype=str)).eq("minute_not_confirmed").sum()
+        )
+        if not blocked_buy.empty
+        else 0,
         "limit_sell_block_count": int(blocked_sell.get("blocked_reason", pd.Series(dtype=str)).str.contains("limit", na=False).sum())
         if not blocked_sell.empty
         else 0,
     }
     metrics.update(topk_metrics)
+    if benchmark is not None and not benchmark.empty:
+        metrics.update(summarize_benchmark(equity, benchmark))
     return metrics
+
+
+def read_benchmark(path: str | Path) -> pd.DataFrame:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path)
+    if "date" not in df.columns:
+        raise ValueError("Benchmark file must include 'date' column.")
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "benchmark_return" in df.columns:
+        ret = pd.to_numeric(df["benchmark_return"], errors="coerce")
+    elif "close" in df.columns:
+        close = pd.to_numeric(df["close"], errors="coerce")
+        ret = close.pct_change()
+    else:
+        raise ValueError("Benchmark file must include 'benchmark_return' or 'close' column.")
+    out = pd.DataFrame({"date": df["date"], "benchmark_return": ret}).dropna(subset=["date"]).sort_values("date")
+    return out
+
+
+def summarize_benchmark(equity: pd.DataFrame, benchmark: pd.DataFrame) -> dict:
+    left = equity[["date", "daily_return"]].copy()
+    left["date"] = pd.to_datetime(left["date"])
+    left["daily_return"] = pd.to_numeric(left["daily_return"], errors="coerce").fillna(0.0)
+    right = benchmark[["date", "benchmark_return"]].copy()
+    right["date"] = pd.to_datetime(right["date"])
+    right["benchmark_return"] = pd.to_numeric(right["benchmark_return"], errors="coerce").fillna(0.0)
+
+    merged = left.merge(right, on="date", how="inner").dropna()
+    if merged.empty:
+        return {"benchmark_overlap_days": 0}
+
+    strat_ret = merged["daily_return"].astype(float)
+    bench_ret = merged["benchmark_return"].astype(float)
+    excess = strat_ret - bench_ret
+    bench_total = float((1 + bench_ret).prod() - 1)
+    excess_total = float((1 + strat_ret).prod() / max((1 + bench_ret).prod(), 1e-12) - 1)
+    info_ratio = 0.0
+    te = float(excess.std())
+    if te > 0:
+        info_ratio = float(np.sqrt(252) * excess.mean() / te)
+
+    beta = 0.0
+    alpha_annual = 0.0
+    bench_var = float(bench_ret.var())
+    if bench_var > 0:
+        cov = float(np.cov(strat_ret, bench_ret, ddof=0)[0, 1])
+        beta = cov / bench_var
+        alpha_daily = float(strat_ret.mean() - beta * bench_ret.mean())
+        alpha_annual = float(alpha_daily * 252)
+
+    up_mask = bench_ret > 0
+    down_mask = bench_ret < 0
+    up_capture = _capture_ratio(strat_ret[up_mask], bench_ret[up_mask])
+    down_capture = _capture_ratio(strat_ret[down_mask], bench_ret[down_mask])
+
+    return {
+        "benchmark_overlap_days": int(len(merged)),
+        "benchmark_total_return": bench_total,
+        "excess_return": excess_total,
+        "information_ratio": info_ratio,
+        "beta": beta,
+        "alpha_annual": alpha_annual,
+        "up_capture": up_capture,
+        "down_capture": down_capture,
+    }
+
+
+def _capture_ratio(strategy_returns: pd.Series, benchmark_returns: pd.Series) -> float:
+    if strategy_returns.empty or benchmark_returns.empty:
+        return 0.0
+    bench_total = float((1 + benchmark_returns).prod() - 1)
+    if abs(bench_total) < 1e-12:
+        return 0.0
+    strat_total = float((1 + strategy_returns).prod() - 1)
+    return strat_total / bench_total
 
 
 def _profit_loss_ratio(sells: pd.DataFrame) -> float:

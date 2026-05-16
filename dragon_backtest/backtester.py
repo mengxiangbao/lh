@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -76,10 +77,20 @@ SIGNAL_OUTPUT_COLUMNS = [
 ]
 
 
-def run_backtest(signals: pd.DataFrame, cfg: dict, mode: str | None = None) -> dict:
+def run_backtest(
+    signals: pd.DataFrame,
+    cfg: dict,
+    mode: str | None = None,
+    execution_mode: str = "daily",
+    minute_cfg: dict[str, Any] | None = None,
+) -> dict:
     mode = mode or cfg["signal"]["mode"]
+    if execution_mode not in {"daily", "minute_confirmed"}:
+        raise ValueError(f"Unknown execution_mode: {execution_mode}")
     trade_cfg = cfg["trade"]
     risk_cfg = cfg["risk"]
+    minute_ctx = _normalize_minute_cfg(minute_cfg)
+    minute_cache: dict[tuple[str, str, str, str], pd.DataFrame | None] = {}
 
     dates = list(pd.Index(signals["date"].drop_duplicates()).sort_values())
     date_to_idx = {date: i for i, date in enumerate(dates)}
@@ -124,9 +135,44 @@ def run_backtest(signals: pd.DataFrame, cfg: dict, mode: str | None = None) -> d
             if code not in trade_day.index:
                 trades.append(blocked_trade(trade_date, code, "buy", "missing_trade_row", "entry", cash))
                 continue
+            buy_row = trade_day.loc[code]
+            buy_trade_date = pd.Timestamp(trade_date)
+            buy_meta = {
+                "execution_mode": execution_mode,
+            }
+            if execution_mode == "minute_confirmed":
+                buy_row, minute_blocked, minute_meta = resolve_minute_entry_row(
+                    daily_row=trade_day.loc[code],
+                    trade_date=buy_trade_date,
+                    minute_cfg=minute_ctx,
+                    minute_cache=minute_cache,
+                )
+                buy_meta.update(minute_meta)
+                if buy_row is None:
+                    if minute_blocked == "missing_minute_data" and minute_ctx["missing_policy"] == "fallback_daily":
+                        buy_row = trade_day.loc[code]
+                        buy_meta.update(
+                            {
+                                "execution_mode": "daily_fallback",
+                                "minute_fallback": "missing_minute_data",
+                            }
+                        )
+                    else:
+                        trades.append(
+                            blocked_trade(
+                                trade_date=trade_date,
+                                code=code,
+                                side="buy",
+                                blocked_reason=minute_blocked,
+                                reason="minute_entry",
+                                cash=cash,
+                                extras=buy_meta,
+                            )
+                        )
+                        continue
             target_value = last_equity * trade_cfg["target_weight"] * float(signal_row.get("target_weight_mult", 1.0))
             position, cash, record = execute_buy(
-                trade_day.loc[code],
+                buy_row,
                 signal_row,
                 trade_date,
                 date_to_idx[trade_date],
@@ -134,6 +180,7 @@ def run_backtest(signals: pd.DataFrame, cfg: dict, mode: str | None = None) -> d
                 cash,
                 trade_cfg,
             )
+            record.update(buy_meta)
             trades.append(record)
             if position is not None:
                 positions[code] = position
@@ -243,8 +290,16 @@ def build_sell_orders(
     return sell
 
 
-def blocked_trade(trade_date, code: str, side: str, blocked_reason: str, reason: str, cash: float) -> dict:
-    return {
+def blocked_trade(
+    trade_date,
+    code: str,
+    side: str,
+    blocked_reason: str,
+    reason: str,
+    cash: float,
+    extras: dict[str, Any] | None = None,
+) -> dict:
+    record = {
         "trade_date": trade_date,
         "signal_date": pd.NaT,
         "code": code,
@@ -260,6 +315,172 @@ def blocked_trade(trade_date, code: str, side: str, blocked_reason: str, reason:
         "score": 0.0,
         "trigger": False,
     }
+    if extras:
+        record.update(extras)
+    return record
+
+
+def _normalize_minute_cfg(minute_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = dict(minute_cfg or {})
+    freq = str(cfg.get("minute_freq", "5min"))
+    entry_time = str(cfg.get("minute_entry_time", "09:35"))
+    minute_dir = Path(cfg.get("minute_dir", "data/raw/minute"))
+    missing_policy = str(cfg.get("missing_policy", "fallback_daily"))
+    price_field = str(cfg.get("price_field", "open"))
+    if missing_policy not in {"fallback_daily", "error"}:
+        raise ValueError(f"Unknown minute missing policy: {missing_policy}")
+    if price_field not in {"open", "close", "vwap"}:
+        raise ValueError(f"Unknown minute price field: {price_field}")
+    return {
+        "minute_freq": freq,
+        "minute_entry_time": entry_time,
+        "minute_dir": minute_dir,
+        "missing_policy": missing_policy,
+        "price_field": price_field,
+    }
+
+
+def resolve_minute_entry_row(
+    daily_row: pd.Series,
+    trade_date: pd.Timestamp,
+    minute_cfg: dict[str, Any],
+    minute_cache: dict[tuple[str, str, str, str], pd.DataFrame | None],
+) -> tuple[pd.Series | None, str, dict[str, Any]]:
+    trade_date = pd.Timestamp(trade_date)
+    ts_code = str(daily_row.get("ts_code", "") or "")
+    code = str(daily_row.get("code", "") or "")
+    base_meta = {
+        "minute_freq": minute_cfg["minute_freq"],
+        "minute_entry_time": minute_cfg["minute_entry_time"],
+        "minute_price_field": minute_cfg["price_field"],
+    }
+    minute_df, source = _load_minute_data_for_code(
+        minute_dir=minute_cfg["minute_dir"],
+        freq=minute_cfg["minute_freq"],
+        code=code,
+        ts_code=ts_code,
+        minute_cache=minute_cache,
+    )
+    if minute_df is None or minute_df.empty or "datetime" not in minute_df.columns:
+        return None, "missing_minute_data", base_meta
+
+    day_mask = minute_df["datetime"].dt.normalize() == trade_date.normalize()
+    day_df = minute_df.loc[day_mask].copy().sort_values("datetime")
+    if day_df.empty:
+        return None, "missing_minute_data", base_meta
+
+    cutoff = pd.Timestamp(f"{trade_date.date()} {minute_cfg['minute_entry_time']}")
+    after = day_df[day_df["datetime"] >= cutoff].copy()
+    if after.empty:
+        return None, "minute_not_confirmed", base_meta
+
+    liquid = _filter_liquid_minute_rows(after)
+    if liquid.empty:
+        return None, "minute_no_liquidity", base_meta
+
+    minute_row = liquid.iloc[0]
+    execution_row = daily_row.copy()
+    execution_row = _apply_minute_execution_price(execution_row, minute_row, minute_cfg["price_field"])
+    for col in ["high", "low", "close", "amount", "volume", "vol"]:
+        if col in minute_row.index:
+            execution_row[col] = minute_row[col]
+
+    base_meta.update(
+        {
+            "minute_bar_time": pd.Timestamp(minute_row["datetime"]),
+            "minute_source_file": source,
+        }
+    )
+    return execution_row, "", base_meta
+
+
+def _load_minute_data_for_code(
+    minute_dir: Path,
+    freq: str,
+    code: str,
+    ts_code: str,
+    minute_cache: dict[tuple[str, str, str, str], pd.DataFrame | None],
+) -> tuple[pd.DataFrame | None, str]:
+    key = (str(minute_dir), freq, code, ts_code)
+    if key in minute_cache:
+        cached = minute_cache[key]
+        return cached, ""
+
+    search_roots = [minute_dir / freq, minute_dir]
+    patterns = []
+    if ts_code:
+        patterns.append(f"{ts_code}_{freq}_*.csv")
+    if code:
+        patterns.append(f"{code}_{freq}_*.csv")
+        patterns.append(f"{code}.*_{freq}_*.csv")
+
+    paths: list[Path] = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for pat in patterns:
+            paths.extend(root.glob(pat))
+    unique_paths = sorted(set(paths))
+    if not unique_paths:
+        minute_cache[key] = None
+        return None, ""
+
+    frames = []
+    for path in unique_paths:
+        df = _read_minute_file(path)
+        if df is not None and not df.empty:
+            frames.append(df)
+    if not frames:
+        minute_cache[key] = None
+        return None, ""
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["datetime"]).sort_values("datetime")
+    minute_cache[key] = merged
+    return merged, str(unique_paths[0])
+
+
+def _read_minute_file(path: Path) -> pd.DataFrame | None:
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    time_cols = ["datetime", "trade_time", "trade_datetime", "trade_date", "time"]
+    dt_col = next((col for col in time_cols if col in df.columns), None)
+    if not dt_col:
+        return None
+    out = df.copy()
+    out["datetime"] = pd.to_datetime(out[dt_col], errors="coerce")
+    out = out.dropna(subset=["datetime"]).sort_values("datetime")
+    return out
+
+
+def _filter_liquid_minute_rows(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    amount_col = "amount" if "amount" in out.columns else None
+    if amount_col is not None:
+        out[amount_col] = pd.to_numeric(out[amount_col], errors="coerce")
+        out = out[out[amount_col] > 0]
+    volume_col = "volume" if "volume" in out.columns else "vol" if "vol" in out.columns else None
+    if volume_col is not None:
+        out[volume_col] = pd.to_numeric(out[volume_col], errors="coerce")
+        out = out[out[volume_col] > 0]
+    return out
+
+
+def _apply_minute_execution_price(daily_row: pd.Series, minute_row: pd.Series, price_field: str) -> pd.Series:
+    row = daily_row.copy()
+    open_price = pd.to_numeric(pd.Series([minute_row.get("open")]), errors="coerce").iloc[0]
+    close_price = pd.to_numeric(pd.Series([minute_row.get("close")]), errors="coerce").iloc[0]
+    amount = pd.to_numeric(pd.Series([minute_row.get("amount")]), errors="coerce").iloc[0]
+    volume = pd.to_numeric(pd.Series([minute_row.get("volume", minute_row.get("vol"))]), errors="coerce").iloc[0]
+    if price_field == "vwap" and pd.notna(amount) and pd.notna(volume) and volume and volume > 0:
+        row["open"] = float(amount / volume)
+    elif price_field == "close" and pd.notna(close_price):
+        row["open"] = float(close_price)
+    elif pd.notna(open_price):
+        row["open"] = float(open_price)
+    return row
 
 
 def write_backtest_outputs(result: dict, out_dir: str | Path) -> None:

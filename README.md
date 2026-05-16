@@ -402,7 +402,10 @@ minishare 可以用于第二阶段分钟级研究，例如：
 - 验证首板、炸板、回封、尾盘强度
 - 改进涨停排队和可成交性判断
 
-当前程序先提供分钟数据下载器。主回测器仍是日线版本，分钟撮合逻辑可以在数据稳定后继续扩展。
+当前程序支持两种执行模式：
+
+- `daily`：默认模式。`t` 日信号，`t+1` 日开盘撮合。
+- `minute_confirmed`：信号仍由日线生成，但 `t+1` 日买入必须通过分钟线确认，并按分钟线价格与流动性撮合。
 
 安装：
 
@@ -447,6 +450,39 @@ data/raw/minute/5min/
 ```
 
 注意：你提供的 minishare 分钟数据起始时间是 2025-01-01，因此分钟级回测只能从 2025 年以后开始。日线回测仍可使用 Tushare 或其他日线数据源做更长历史。
+
+### minute_confirmed 回测示例
+
+```powershell
+python main.py backtest `
+  --config config/default.toml `
+  --data data/raw/daily_price_long_clean.csv `
+  --out data/backtest_result/confirmed_minute `
+  --mode confirmed `
+  --execution-mode minute_confirmed `
+  --minute-dir data/raw/minute `
+  --minute-freq 5min `
+  --minute-entry-time 09:35 `
+  --minute-missing-policy fallback_daily `
+  --minute-price-field open
+```
+
+参数说明：
+
+- `--execution-mode daily|minute_confirmed`：执行模式。
+- `--minute-dir`：分钟数据根目录（默认 `data/raw/minute`）。
+- `--minute-freq`：分钟频率（`5min/15min/30min/60min`）。
+- `--minute-entry-time`：最早确认买入时间，默认 `09:35`。
+- `--minute-missing-policy fallback_daily|error`：
+  - `fallback_daily`：分钟数据缺失时退回日线开盘撮合；
+  - `error`：分钟数据缺失时直接记为阻塞买单。
+- `--minute-price-field open|close|vwap`：分钟成交价口径（默认 `open`）。
+
+`metrics.json` 会新增分钟阻塞统计：
+
+- `minute_missing_buy_block_count`
+- `minute_no_liquidity_buy_block_count`
+- `minute_not_confirmed_buy_block_count`
 
 ## 配置参数在哪里改？
 
@@ -494,6 +530,20 @@ stale_exit_days           买入后迟迟不启动的退出天数
 
 ```text
 data/backtest_result/confirmed/metrics.json
+```
+
+如需计算基准超额与 alpha/beta，可在回测或汇总时传入基准文件：
+
+```powershell
+python main.py backtest --config config/default.toml --data data/raw/daily_price.csv --out data/backtest_result/confirmed --mode confirmed --benchmark data/raw/benchmark.csv
+python main.py summarize-backtest --input data/backtest_result/confirmed --config config/default.toml --benchmark data/raw/benchmark.csv
+```
+
+基准文件支持两种字段格式：
+
+```text
+date + benchmark_return
+date + close
 ```
 
 里面包括：
@@ -618,6 +668,13 @@ python main.py sweep-params --config config/default.toml --data data/raw/daily_p
 
 ```powershell
 python main.py sweep-params --config config/default.toml --data data/raw/daily_price.csv --out data/param_sweep --walk-forward --train-months 24 --test-months 3
+```
+
+walk-forward 会额外输出：
+
+```text
+data/param_sweep/walk_forward_windows.csv   每组参数每个滚动窗口的 in/out 表现
+data/param_sweep/walk_forward_summary.csv   按样本外稳定性排序的汇总
 ```
 
 输出：
@@ -862,6 +919,30 @@ python main.py backtest `
 调优版仍然只是研究配置，不代表已经找到稳定可实盘的策略。它的作用是把“成功启动样本的统计特征”先落进回测器，再通过样本外、参数稳定性和交易约束继续筛掉偶然性。
 
 当前参数稳定性测试中，`event_tuned` 附近 36 组参数有 27 组总收益为正，其中 `trigger_amount_to_ma60=1.5` 的 12 组全部为正；`1.3` 过宽，失败率较高。因此调优版保留 1.5 放量阈值，并把候选池设为 Top40。
+
+## 因子研究（IC / 分层 / 消融）
+
+可用 `analyze-factors` 对研究标签做因子有效性评估：
+
+```powershell
+python main.py analyze-factors --config config/default.toml --data data/raw/daily_price.csv --out data/factor_analysis --mode confirmed --target future_return_20d --quantiles 5
+```
+
+输出文件：
+
+```text
+data/factor_analysis/factor_monthly_ic.csv
+data/factor_analysis/factor_quantile_returns.csv
+data/factor_analysis/factor_ablation.csv
+```
+
+其中：
+
+```text
+factor_monthly_ic.csv        每月 IC 与 Rank IC
+factor_quantile_returns.csv  按分位的目标收益与高低分位差
+factor_ablation.csv          去掉单个因子后的回测变化（delta_total_return / delta_sharpe）
+```
 
 ## 当前版本边界
 
