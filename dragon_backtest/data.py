@@ -34,6 +34,13 @@ OPTIONAL_DAILY_COLUMNS = {
 }
 
 
+def normalize_bool(s: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(s):
+        return s.fillna(False)
+    text = s.fillna("").astype(str).str.strip().str.lower()
+    return text.isin({"1", "true", "yes", "y"})
+
+
 def read_table(path: str | Path) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
@@ -79,7 +86,7 @@ def normalize_daily_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["sector"] = df["sector"].astype(str)
     for col in ["paused", "is_st"]:
         if col in df.columns:
-            df[col] = df[col].fillna(False).astype(bool)
+            df[col] = normalize_bool(df[col])
     return df
 
 

@@ -129,10 +129,12 @@ def execute_buy(
     if not ok:
         return None, cash, record
 
-    max_value = float(row["amount"]) * trade_cfg["volume_cap"]
+    signal_amount = max(float(signal_row.get("amount", 0.0) or 0.0), 0.0)
+    max_value = signal_amount * trade_cfg["volume_cap"]
     order_value = min(float(target_value), max_value, cash)
     if order_value <= 0:
-        record.update(status="blocked", blocked_reason="no_cash")
+        reason = "no_signal_liquidity" if signal_amount <= 0 else "no_cash"
+        record.update(status="blocked", blocked_reason=reason)
         return None, cash, record
 
     fill_price = float(row["open"]) * (1 + trade_cfg["buy_slippage"] + impact(row, order_value, trade_cfg))

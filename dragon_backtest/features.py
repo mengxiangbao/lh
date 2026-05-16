@@ -8,6 +8,45 @@ def safe_div(a, b):
     return a / pd.Series(b).replace(0, np.nan)
 
 
+def _is_limit_up_by_market_fallback(df: pd.DataFrame) -> pd.Series:
+    market_text = df.get("market", pd.Series("", index=df.index)).fillna("").astype(str)
+    exchange_text = df.get("exchange", pd.Series("", index=df.index)).fillna("").astype(str).str.upper()
+    is_st = df.get("is_st", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    list_days = pd.to_numeric(df.get("list_days", pd.Series(np.nan, index=df.index)), errors="coerce")
+    ret_1d = pd.to_numeric(df.get("ret_1d", pd.Series(np.nan, index=df.index)), errors="coerce")
+
+    market_kcb = market_text.str.contains("科创板", regex=False)
+    market_gem = market_text.str.contains("创业板", regex=False)
+    market_bse = market_text.str.contains("北交所", regex=False) | (exchange_text == "BSE")
+    market_main = market_text.str.contains("主板", regex=False) | market_text.str.contains("中小板", regex=False) | market_text.eq("")
+    new_listing = list_days.notna() & (list_days < 5)
+
+    threshold = pd.Series(0.10, index=df.index, dtype=float)
+    threshold[is_st] = 0.05
+    threshold[market_kcb | market_gem] = 0.20
+    threshold[market_bse] = 0.30
+    threshold[new_listing & market_main] = np.nan
+    return ret_1d >= (threshold - 0.001)
+
+
+def compute_is_limit_up(df: pd.DataFrame) -> pd.Series:
+    up_limit = pd.to_numeric(df.get("up_limit", pd.Series(np.nan, index=df.index)), errors="coerce")
+    pre_close = pd.to_numeric(df.get("pre_close", pd.Series(np.nan, index=df.index)), errors="coerce")
+    close = pd.to_numeric(df.get("close", pd.Series(np.nan, index=df.index)), errors="coerce")
+    valid_limit = (
+        up_limit.notna()
+        & pre_close.notna()
+        & close.notna()
+        & (up_limit > 0)
+        & (up_limit < 9999)
+        & (pre_close > 0)
+        & ((up_limit / pre_close - 1) < 5)
+    )
+    by_limit = close >= up_limit * 0.999
+    by_fallback = _is_limit_up_by_market_fallback(df)
+    return by_limit.where(valid_limit, by_fallback).fillna(False)
+
+
 def compound_return(s: pd.Series, window: int, min_periods: int | None = None) -> pd.Series:
     if min_periods is None:
         min_periods = max(2, window // 2)
@@ -63,7 +102,7 @@ def prepare_features(daily: pd.DataFrame) -> pd.DataFrame:
         lambda s: s.rolling(20, min_periods=10).min()
     )
 
-    df["is_limit_up"] = (df["close"] >= df["up_limit"] * 0.999) | (df["ret_1d"] >= 0.095)
+    df["is_limit_up"] = compute_is_limit_up(df)
     df["touch_limit_up"] = df["high"] >= df["up_limit"] * 0.999
     df["limit_up_count_10d"] = g["is_limit_up"].transform(lambda s: s.rolling(10, min_periods=1).sum())
     df["limit_up_count_250d"] = g["is_limit_up"].transform(lambda s: s.rolling(250, min_periods=30).sum())

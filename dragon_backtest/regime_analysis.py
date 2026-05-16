@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .data import load_daily
+from .features import compute_is_limit_up
 
 
 def run_regime_analysis(
@@ -39,7 +40,7 @@ def build_market_context(daily: pd.DataFrame) -> pd.DataFrame:
     df["ret_1d"] = pd.to_numeric(df["close"], errors="coerce") / pd.to_numeric(df["pre_close"], errors="coerce").replace(0, np.nan) - 1
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     df["ret_x_amount"] = df["ret_1d"].fillna(0.0) * df["amount"]
-    df["is_limit_up"] = (df["close"] >= df["up_limit"] * 0.999) | (df["ret_1d"] >= 0.095)
+    df["is_limit_up"] = compute_is_limit_up(df)
 
     grouped = df.groupby("date", as_index=False).agg(
         market_ret_equal=("ret_1d", "mean"),

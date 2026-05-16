@@ -23,8 +23,17 @@ from dragon_backtest.signals import build_signals
 
 
 ROOT = Path(__file__).resolve().parent
-LOCAL_DATA_ROOT = Path("Z:/home/资料/股票/量化/mengxiangbao/lh/data")
-DEFAULT_DAILY_PATH = LOCAL_DATA_ROOT / "raw/daily_price_long_clean.csv"
+DEFAULT_CONFIG_PATH = ROOT / "config/event_tuned.toml"
+DEFAULT_DATA_ROOT = ROOT / "data"
+
+
+def default_daily_path(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
+    try:
+        cfg = load_config(config_path)
+        candidate = Path(cfg.get("data", {}).get("daily_path", "data/raw/daily_price_long_clean.csv"))
+    except Exception:
+        candidate = Path("data/raw/daily_price_long_clean.csv")
+    return candidate if candidate.is_absolute() else ROOT / candidate
 
 
 def rel_path(value: str) -> Path:
@@ -94,11 +103,11 @@ def run_research_backtest(
 
 def render_sidebar():
     st.sidebar.header("运行参数")
-    data_path = st.sidebar.text_input("日线数据路径", str(DEFAULT_DAILY_PATH))
+    data_path = st.sidebar.text_input("日线数据路径", str(default_daily_path()))
     config_path = st.sidebar.text_input("配置文件路径", "config/event_tuned.toml")
     mode = st.sidebar.selectbox("回测模式", ["confirmed", "potential", "hybrid"], index=0)
-    out_dir = st.sidebar.text_input("结果输出目录", str(LOCAL_DATA_ROOT / f"backtest_result/{mode}"))
-    check_dir = st.sidebar.text_input("数据检查目录", str(LOCAL_DATA_ROOT / "data_check"))
+    out_dir = st.sidebar.text_input("结果输出目录", str(DEFAULT_DATA_ROOT / f"backtest_result/{mode}"))
+    check_dir = st.sidebar.text_input("数据检查目录", str(DEFAULT_DATA_ROOT / "data_check"))
 
     st.sidebar.divider()
     start = st.sidebar.text_input("开始日期，可空", "")
@@ -304,7 +313,7 @@ def render_parameter_sweep(params: dict) -> None:
     stop_loss = cols[2].text_input("止损", "-0.08,-0.10")
     max_holding_days = cols[3].text_input("最长持仓", "20,30")
 
-    out_dir_text = st.text_input("参数测试输出目录", str(LOCAL_DATA_ROOT / "param_sweep"))
+    out_dir_text = st.text_input("参数测试输出目录", str(DEFAULT_DATA_ROOT / "param_sweep"))
     sweep_out_dir = rel_path(out_dir_text)
 
     if st.button("运行参数测试", type="primary"):

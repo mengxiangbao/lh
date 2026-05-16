@@ -6,7 +6,7 @@ from typing import Callable
 
 import pandas as pd
 
-from .data import write_table
+from .data import normalize_bool, write_table
 from .tushare_client import DEFAULT_TUSHARE_HTTP_URL, init_tushare
 
 
@@ -244,8 +244,8 @@ def finalize_daily_schema(df: pd.DataFrame) -> pd.DataFrame:
     out["amount"] = df["amount"].fillna(0).astype(float) * 1000.0
     out["up_limit"] = df["up_limit"].fillna(out["pre_close"] * 1.10).astype(float)
     out["down_limit"] = df["down_limit"].fillna(out["pre_close"] * 0.90).astype(float)
-    out["paused"] = df["paused"].fillna(False).astype(bool)
-    out["is_st"] = df["is_st"].fillna(False).astype(bool)
+    out["paused"] = normalize_bool(df["paused"])
+    out["is_st"] = normalize_bool(df["is_st"])
     out["list_date"] = pd.to_datetime(df["list_date"], errors="coerce")
     out["sector"] = df["sector"].fillna("unknown").astype(str)
     out["float_mv"] = df["circ_mv"].fillna(0).astype(float) * 10000.0

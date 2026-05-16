@@ -1,0 +1,6 @@
+[data]
+daily_path = "data/raw/daily_price_long_clean.csv"
+[paths]
+backtest_out_dir = "data/backtest_result/confirmed"
+data_check_dir = "data/data_check"
+param_sweep_dir = "data/param_sweep"

@@ -4,7 +4,7 @@ param(
     [string]$Start = "20210101",
     [string]$End = "20241231",
     [string]$Mode = "confirmed",
-    [string]$DataRoot = "Z:\home\资料\股票\量化\mengxiangbao\lh\data"
+    [string]$DataRoot = "data"
 )
 
 if (-not $env:TUSHARE_TOKEN) {
